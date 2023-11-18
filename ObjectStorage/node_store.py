@@ -1,4 +1,5 @@
 import os
+import numpy as np
 
 class NodeStore:
   def __init__(self, path=""):
@@ -21,8 +22,17 @@ class NodeStore:
   def Alive(self):
     return self.alive
   
-  def Corrupt(self):
+  def Crash(self):
     self.alive = False
   
   def Recover(self):
     self.alive = True
+    
+  def Corrupt(self, key):
+    obj_path = os.path.join(self.path, f"{key}.obj")
+    b = b''
+    with open(obj_path, 'rb') as f:
+      b = list(f.read())
+    with open(obj_path, 'wb') as f:
+      np.random.shuffle(b)
+      f.write(bytes(b))
