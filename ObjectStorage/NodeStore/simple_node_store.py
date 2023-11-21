@@ -1,13 +1,16 @@
 import os
 import numpy as np
 
-class NodeStore:
+from .base_node_store import BaseNodeStore
+
+class SimpleNodeStore(BaseNodeStore):
   def __init__(self, path=""):
+    super().__init__()
     self.path = path
     self.alive = True
     if not os.path.exists(self.path):
       os.system('mkdir ' + self.path)
-  
+
   def Write(self, key, content):
     obj_path = os.path.join(self.path, f"{key}.obj")
     with open(obj_path, 'wb+') as f:

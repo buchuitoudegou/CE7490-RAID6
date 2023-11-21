@@ -2,8 +2,9 @@ import json
 import os
 import numpy as np
 
-from .node_store import NodeStore
+from .NodeStore import get_node_store
 from .parity import GaloisField
+from .multithreading import run_tasks
 
 CHUNK_SIZE = 16
 
@@ -34,12 +35,10 @@ class ObjectStore:
   
   def __new_store(self):
     self.meta['node_num'] = self.node_num
-    self.meta['nodes'] = []
     self.meta['keys'] = {}
     for i in range(self.node_num):
       path = os.path.join(self.path, f"node_{i}")
-      self.nodes[i] = NodeStore(path)
-      self.meta['nodes'].append(path)
+      self.nodes[i] = get_node_store("simple", path)
   
   def __load_meta(self):
     with open(os.path.join(self.path, 'obj_meta.json'), 'r') as f:
@@ -67,19 +66,23 @@ class ObjectStore:
     }
     # randomly select two nodes as parity nodes
     node_ids = list(range(self.node_num))
-    parity_nodes = np.sort(np.random.choice(node_ids, size=2, replace=False))
+    parity_nodes = np.sort(np.random.choice(node_ids, size=2, replace=False)).tolist()
     data_nodes = list(set(node_ids) - set(parity_nodes))
     file_meta['data_nodes'] = data_nodes
-    file_meta['parity_nodes'] = parity_nodes.tolist()
+    file_meta['parity_nodes'] = parity_nodes
     
     data = self.__distribute_data(input_file_path, file_meta)
     parity = self.__compute_parity(data)
-    for i in range(len(data_nodes)):
-      node_id = data_nodes[i]
-      self.nodes[node_id].Write(key, bytes(data[i,:].tolist()))
-    for i in range(len(parity_nodes)):
-      node_id = parity_nodes[i]
-      self.nodes[node_id].Write(key, bytes(parity[i,:].tolist()))
+    # for i in range(len(data_nodes)):
+    #   node_id = data_nodes[i]
+    #   self.nodes[node_id].Write(key, bytes(data[i,:].tolist()))
+    # for i in range(len(parity_nodes)):
+    #   node_id = parity_nodes[i]
+    #   self.nodes[node_id].Write(key, bytes(parity[i,:].tolist()))
+    node_ids = data_nodes + parity_nodes
+    contents = [bytes(data[i,:].tolist()) for i in range(len(data))]
+    contents += [bytes(parity[i,:].tolist()) for i in range(len(parity))]
+    self.__write_to_nodes(node_ids, key, contents)
     
     self.meta['keys'][key] = file_meta
     return True
@@ -115,11 +118,10 @@ class ObjectStore:
     
     if len(alive_data_nodes) == len(data_nodes):
       content, parity = [], []
-      for node_id in alive_data_nodes:
-        content.append(self.nodes[node_id].Read(key))
-
-      for node_id in alive_parity_nodes:
-        parity.append(self.nodes[node_id].Read(key))
+      # for node_id in alive_data_nodes:
+      #   content.append(self.nodes[node_id].Read(key))
+      content = self.__read_from_nodes(alive_data_nodes, key)
+      parity = self.__read_from_nodes(alive_parity_nodes, key)
 
       bcontent = bytes(b''.join(content))[:file_size]
       corrupt = []
@@ -146,12 +148,14 @@ class ObjectStore:
 
     if len(alive_data_nodes) >= len(data_nodes) - 2:
       # erasure failure
-      content = []
-      parity = []
-      for node_id in alive_data_nodes:
-        content.append(list(self.nodes[node_id].Read(key)))
-      for node_id in alive_parity_nodes:
-        parity.append(list(self.nodes[node_id].Read(key)))
+      content = self.__read_from_nodes(alive_data_nodes, key)
+      parity = self.__read_from_nodes(alive_parity_nodes, key)
+      # for node_id in alive_data_nodes:
+      #   content.append(list(self.nodes[node_id].Read(key)))
+      # for node_id in alive_parity_nodes:
+      #   parity.append(list(self.nodes[node_id].Read(key)))
+      content = [list(content[i]) for i in range(len(content))]
+      parity = [list(parity[i]) for i in range(len(parity))]
       # print('corrupted: ', corrupted_disk_list)
       rebuild_content = self.__data_rebuild(content, parity, corrupted_disk_list, file_size)
       self.__write_to_file(output_file_path, rebuild_content)
@@ -182,28 +186,38 @@ class ObjectStore:
       if self.meta['keys'][key]['error'] == 'Data':
         corrupted_disk_list = [0]
         content, parity = [], []
-        idx = 0
-        for node_id in key_meta['data_nodes']:
-          if idx == 0:
-            idx += 1
-            continue
-          content.append(list(self.nodes[node_id].Read(key)))
-        for node_id in key_meta['parity_nodes']:
-          parity.append(list(self.nodes[node_id].Read(key)))
+        # idx = 0
+        # for node_id in key_meta['data_nodes']:
+        #   if idx == 0:
+        #     idx += 1
+        #     continue
+        #   content.append(list(self.nodes[node_id].Read(key)))
+        nodes = key_meta['data_nodes']
+        nodes = nodes[1:]
+        content = self.__read_from_nodes(nodes, key)
+        parity = self.__read_from_nodes(key_meta['parity_nodes'], key)
+        # for node_id in key_meta['parity_nodes']:
+        #   parity.append(list(self.nodes[node_id].Read(key)))
+        content = [list(content[i]) for i in range(len(content))]
+        parity = [list(parity[i]) for i in range(len(parity))]
         rebuild_content = self.__data_rebuild(content, parity, corrupted_disk_list, key_meta['size'])
         real_content = self.__distribute_real_data(rebuild_content)
         self.nodes[key_meta['data_nodes'][0]].Write(key, bytes(real_content[0,:].tolist()))
         self.meta['keys'][key]['error'] = 'No'
       elif self.meta['keys'][key]['error'] == 'Parity':
         content, parity = [], []
-        for node_id in key_meta['data_nodes']:
-          content.append(list(self.nodes[node_id].Read(key)))
+        # for node_id in key_meta['data_nodes']:
+        #   content.append(list(self.nodes[node_id].Read(key)))
+        content = self.__read_from_nodes(key_meta['data_nodes'], key)
+        content = [list(content[i]) for i in range(len(content))]
         content = np.asarray(content).reshape(-1).tolist()
         parity = self.__compute_parity(self.__pad_and_reshape(content, len(content)))
-        idx = 0
-        for node_id in key_meta['parity_nodes']:
-          self.nodes[node_id].Write(key, bytes(parity[idx,:].tolist()))
-          idx += 1
+        # idx = 0
+        # for node_id in key_meta['parity_nodes']:
+        #   self.nodes[node_id].Write(key, bytes(parity[idx,:].tolist()))
+        #   idx += 1
+        parity_contents = [bytes(parity[i,:].tolist()) for i in range(len(parity))]
+        self.__write_to_nodes(key_meta['parity_nodes'], key, parity_contents)
         self.meta['keys'][key]['error'] = 'No'
   
   def __write_to_file(self, file_path, content):
@@ -235,6 +249,8 @@ class ObjectStore:
     with open(os.path.join(self.path, 'obj_meta.json'), 'w') as f:
       # print(self.meta)
       f.write(json.dumps(self.meta))
+    for i in range(self.node_num):
+      self.nodes[i].Close()
   
   def CrashParityNode(self, key, num=1):
     if key not in self.meta['keys']:
@@ -294,3 +310,28 @@ class ObjectStore:
     for node_id in parity_nodes:
       self.nodes[node_id].Recover()
     return True
+
+  def __read_from_nodes(self, node_ids, key):
+    content = [[] for _ in range(len(node_ids))]
+    tasks = []
+    for i in range(len(node_ids)):
+      node_id = node_ids[i]
+      def task(i, node_id):
+        def func():
+          content[i] = self.nodes[node_id].Read(key)
+        return func
+      tasks.append(task(i, node_id))
+    run_tasks(tasks)
+    return content
+
+  def __write_to_nodes(self, node_ids, key, contents):
+    tasks = []
+    for i in range(len(node_ids)):
+      node_id = node_ids[i]
+      def task(node_id, content):
+        def func():
+          self.nodes[node_id].Write(key, content)
+        return func
+      tasks.append(task(node_id, contents[i]))
+    run_tasks(tasks)
+    return True 

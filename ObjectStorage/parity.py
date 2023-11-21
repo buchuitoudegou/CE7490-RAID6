@@ -89,7 +89,8 @@ class GaloisField(object):
                 for k in range(i + 1, dim):
                     if A_[k, i]:
                         break
-                A_[i, :] = list(map(self.add, A_[i, :], A_[k, :]))
+                if i + 1 < dim:
+                    A_[i, :] = list(map(self.add, A_[i, :], A_[k, :]))
             A_[i, :] = list(map(self.div, A_[i, :], [A_[i, i]] * len(A_[i, :])))
             for j in range(i+1, dim):
                 A_[j, :] = self.add(A_[j,:], list(map(self.mult, A_[i, :], [self.div(A_[j, i], A_[i, i])] * len(A_[i, :]))))

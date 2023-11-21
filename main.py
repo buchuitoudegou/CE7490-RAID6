@@ -9,7 +9,7 @@ class TestObjectStore(unittest.TestCase):
     super().setUp()
     os.system("rm -rf /tmp/raid6/*")
     self.store = ObjectStorage.ObjectStore("/tmp/raid6/", 5)
-    self.input_file = "example/test.log"
+    self.input_file = "example/Tank.fbx"
     self.output_file = "output.txt"
   
   def test_normal_write(self):
